@@ -1,0 +1,208 @@
+#include <HardwareSerial.h>
+#include <WiFi.h>
+
+HardwareSerial NextionSerial(2); // RX=16, TX=17
+
+// Глобальные переменные
+int refreshRate = 500;
+unsigned long lastUpdate = 0;
+
+// Датчики
+int temps[5] = {0, 0, 0, 0, 0};
+int tempMin[5] = {1200, 1200, 1200, 1200, 1200};
+int tempMax[5] = {0, 0, 0, 0, 0};
+int tempRate[5] = {0, 0, 0, 0, 0};
+int heaterStatus = 0;
+int errCount = 0;
+
+void setup() {
+  NextionSerial.begin(115200, SERIAL_8N1, 16, 17);
+  delay(500);
+  
+  // Отправить системную информацию
+  sendSystemInfo();
+}
+
+void loop() {
+  // Обработка входящих команд от Nextion
+  handleNextionInput();
+  
+  // Периодическое обновление данных
+  if (millis() - lastUpdate >= refreshRate) {
+    lastUpdate = millis();
+    readSensors();
+    sendDataToNextion();
+  }
+}
+
+// ===== ОТПРАВКА ДАННЫХ НА NEXTION =====
+
+void nextionCmd(String cmd) {
+  NextionSerial.print(cmd);
+  NextionSerial.write(0xFF);
+  NextionSerial.write(0xFF);
+  NextionSerial.write(0xFF);
+}
+
+void sendDataToNextion() {
+  // Температуры
+  nextionCmd("t1_val.val=" + String(temps[0]));
+  nextionCmd("t2_val.val=" + String(temps[1]));
+  nextionCmd("t3_val.val=" + String(temps[2]));
+  nextionCmd("t4_val.val=" + String(temps[3]));
+  nextionCmd("t5_val.val=" + String(temps[4]));
+  
+  // Статус нагревателя
+  nextionCmd("heater_status.val=" + String(heaterStatus));
+  
+  // Min/Max/Rate
+  nextionCmd("t1_min.val=" + String(tempMin[0]));
+  nextionCmd("t1_max.val=" + String(tempMax[0]));
+  nextionCmd("t1_rate.val=" + String(tempRate[0]));
+  nextionCmd("t2_min.val=" + String(tempMin[1]));
+  nextionCmd("t2_max.val=" + String(tempMax[1]));
+  nextionCmd("t2_rate.val=" + String(tempRate[1]));
+  nextionCmd("t3_min.val=" + String(tempMin[2]));
+  nextionCmd("t3_max.val=" + String(tempMax[2]));
+  nextionCmd("t3_rate.val=" + String(tempRate[2]));
+  nextionCmd("t4_min.val=" + String(tempMin[3]));
+  nextionCmd("t4_max.val=" + String(tempMax[3]));
+  nextionCmd("t4_rate.val=" + String(tempRate[3]));
+  nextionCmd("t5_min.val=" + String(tempMin[4]));
+  nextionCmd("t5_max.val=" + String(tempMax[4]));
+  nextionCmd("t5_rate.val=" + String(tempRate[4]));
+}
+
+void sendSystemInfo() {
+  // ESP32 статус
+  nextionCmd("espStatus.txt=\"Connected\"");
+  
+  // WiFi статус
+  if (WiFi.status() == WL_CONNECTED) {
+    nextionCmd("wifiStatus.txt=\"Connected\"");
+    nextionCmd("ssidVal.txt=\"" + WiFi.SSID() + "\"");
+    nextionCmd("ipAddr.txt=\"IP:" + WiFi.localIP().toString() + "\"");
+  } else {
+    nextionCmd("wifiStatus.txt=\"Disconnected\"");
+  }
+  
+  // MAC адрес
+  nextionCmd("macAddr.txt=\"MAC:" + WiFi.macAddress() + "\"");
+}
+
+// Добавить ошибку в лог
+void addError(String errMsg) {
+  // Сдвинуть строки вниз
+  for (int i = 9; i >= 1; i--) {
+    // Nextion не может читать txt, поэтому ESP32 хранит лог сам
+    // и отправляет все строки
+  }
+  
+  // Обновить лог на дисплее
+  nextionCmd("log10.txt=log9.txt");  // НЕ РАБОТАЕТ!
+  // Nextion не поддерживает копирование txt между компонентами
+  
+  // РАБОЧИЙ ВАРИАНТ: ESP32 хранит лог и отправляет все строки
+  errCount++;
+  nextionCmd("errCount.val=" + String(errCount));
+  nextionCmd("cov errCount,errCnt.txt,0");
+  
+  // Сдвинуть лог в массиве ESP32 и отправить все 10 строк
+  // (см. ниже)
+}
+
+// ===== ОБРАБОТКА ВВОДА ОТ NEXTION =====
+
+void handleNextionInput() {
+  while (NextionSerial.available()) {
+    String cmd = "";
+    char c;
+    int ffCount = 0;
+    
+    while (NextionSerial.available() && ffCount < 3) {
+      c = NextionSerial.read();
+      if (c == (char)0xFF) {
+        ffCount++;
+      } else {
+        ffCount = 0;
+        cmd += c;
+      }
+    }
+    
+    cmd.trim();
+    if (cmd.length() == 0) return;
+    
+    if (cmd == "WIFI_CFG") {
+      startWiFiConfig();
+    }
+    else if (cmd == "LOG_CLEAR") {
+      clearLog();
+    }
+    else if (cmd == "REFRESH_250") {
+      refreshRate = 250;
+    }
+    else if (cmd == "REFRESH_500") {
+      refreshRate = 500;
+    }
+    else if (cmd == "REFRESH_1000") {
+      refreshRate = 1000;
+    }
+  }
+}
+
+// ===== WiFi КОНФИГУРАЦИЯ =====
+
+void startWiFiConfig() {
+  nextionCmd("espStatus.txt=\"Config...\"");
+  nextionCmd("wifiStatus.txt=\"Config...\"");
+  
+  WiFi.softAP("ThermalHMI_Setup", "");
+  // Запустить веб-сервер на 192.168.4.1
+  // Пользователь вводит SSID + Password
+  // После сохранения ? подключиться к WiFi
+  // ? отправить обновлённый статус на Nextion
+}
+
+// ===== ОЧИСТКА ЛОГА =====
+
+// ESP32 хранит массив логов
+String logEntries[10] = {"", "", "", "", "", "", "", "", "", ""};
+
+void clearLog() {
+  for (int i = 0; i < 10; i++) {
+    logEntries[i] = "";
+    nextionCmd("log" + String(i+1) + ".txt=\"\"");
+  }
+  errCount = 0;
+  nextionCmd("errCount.val=0");
+  nextionCmd("cov errCount,errCnt.txt,0");
+}
+
+void addLogEntry(String entry) {
+  // Сдвинуть вниз
+  for (int i = 9; i > 0; i--) {
+    logEntries[i] = logEntries[i-1];
+  }
+  logEntries[0] = entry;
+  errCount++;
+  
+  // Отправить все строки на Nextion
+  for (int i = 0; i < 10; i++) {
+    nextionCmd("log" + String(i+1) + ".txt=\"" + logEntries[i] + "\"");
+  }
+  nextionCmd("errCount.val=" + String(errCount));
+  nextionCmd("cov errCount,errCnt.txt,0");
+}
+
+// ===== ЧТЕНИЕ ДАТЧИКОВ (ЗАГЛУШКА) =====
+
+void readSensors() {
+  // Замените на реальное чтение термопар
+  // Пример: temps[0] = readMAX6675(0);
+  
+  // Обновить min/max
+  for (int i = 0; i < 5; i++) {
+    if (temps[i] < tempMin[i]) tempMin[i] = temps[i];
+    if (temps[i] > tempMax[i]) tempMax[i] = temps[i];
+  }
+}
